@@ -467,11 +467,13 @@ Known pre-existing upstream failures (not caused by this fork's changes):
 fail at the upstream base commit too; x86_64 passes them. We don't use BBV.
 
 musl note: the *library* is musl-clean (sysconf/mmap/mprotect only); what
-breaks on Alpine is the **test drivers** — c2mir-driver.c and mir-bin-run.c
-dlopen hardcoded glibc paths (`/lib/x86_64-linux-gnu/libc.so.6` etc.,
-c2mir-driver.c:69-124), which is upstream #307. Patch those tables (musl is
-`/lib/ld-musl-<arch>.so.1`, no separate libm/libpthread) to run the suite on
-Alpine.
+broke on Alpine was the **test harness** — driver dlopen tables (#307),
+BusyBox diff options, and c2mir's aarch64 wchar_t — all fixed on the
+`support-musl-std-libs` branch. Validated on Alpine 3.23.4 aarch64: interp
+c-tests fully green; gen modes fail only the exotic jcall.c (fails on a
+feature we never emit); all bootstraps pass given ~1.5GB+ RAM (the
+bb-versioning bootstrap is the suite's peak memory consumer and gets
+OOM-killed on a 1GB box).
 
 ---
 
@@ -521,6 +523,10 @@ Topic branches off upstream master, each independently PR-able:
 - `fix-aarch64-ld-stack-align` — the two `% 16` round-up bugs in
   mir-aarch64.c (va_arg_builtin crashed on any binary128 long double stack
   vararg; ff_call corrupted 9th+ FP args) with c-tests/new/va-ld-stack.c.
+- `support-musl-std-libs` — makes the suite run on musl/Alpine (upstream
+  #307): musl dlopen path in the three driver tables, BusyBox-safe diff
+  probing in runtests.sh, and c2mir's aarch64 wchar_t corrected to unsigned
+  (AAPCS64; musl's alltypes.h redeclares it, breaking the bootstrap).
 
 Integration branch `meson` = all of the above merged + cherry-pick of
 upstream PR #420 (error-path null deref, `-x` annotated) + meson build
