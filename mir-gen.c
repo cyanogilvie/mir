@@ -4685,20 +4685,35 @@ static void gvn_modify (gen_ctx_t gen_ctx) {
                 || (mem_insn->ops[1].mode == MIR_OP_VAR_MEM && mem_insn->ops[0].data == NULL)) {
               add_mem_insn (gen_ctx, insn);
             } else { /* (mem=x|x=mem); ...; r=mem => (mem=x|x=mem); t=x; ...; r=t */
-              copy_gvn_info (bb_insn, mem_bb_insn);
-              print_bb_insn_value (gen_ctx, bb_insn);
+              /* When forwarding from a store of an integer type narrower than
+                 64 bits, the loaded value is the stored register *extended*
+                 from the memory type, not the raw stored register: materialize
+                 the temp with the corresponding extension insn (issue #423).  */
+              MIR_insn_code_t temp_code = insn->code;
+              if (op_ref == &mem_insn->ops[0] && insn->code == MIR_MOV) {
+                switch (op_ref->u.var_mem.type) {
+                case MIR_T_I8: temp_code = MIR_EXT8; break;
+                case MIR_T_U8: temp_code = MIR_UEXT8; break;
+                case MIR_T_I16: temp_code = MIR_EXT16; break;
+                case MIR_T_U16: temp_code = MIR_UEXT16; break;
+                case MIR_T_I32: temp_code = MIR_EXT32; break;
+                case MIR_T_U32: temp_code = MIR_UEXT32; break;
+                default: break;
+                }
+              }
               temp_reg = mem_expr->temp_reg;
               add_def_p = temp_reg == MIR_NON_VAR;
               if (add_def_p) {
                 mem_expr->temp_reg = temp_reg
                   = get_expr_temp_reg (gen_ctx, mem_expr->insn, &mem_expr->temp_reg);
-                new_insn = MIR_new_insn (ctx, insn->code, _MIR_new_var_op (ctx, temp_reg),
+                new_insn = MIR_new_insn (ctx, temp_code, _MIR_new_var_op (ctx, temp_reg),
                                          op_ref == &mem_insn->ops[0] ? mem_insn->ops[1]
                                                                      : mem_insn->ops[0]);
                 new_insn->ops[1].data = NULL; /* remove ssa edge taken from load/store op */
                 gen_add_insn_after (gen_ctx, mem_insn, new_insn);
                 new_bb_insn = new_insn->data;
-                copy_gvn_info (new_bb_insn, mem_bb_insn);
+                if (temp_code == insn->code) /* an extended value is a new value: */
+                  copy_gvn_info (new_bb_insn, mem_bb_insn); /* otherwise keep its fresh one */
                 se = op_ref == &mem_insn->ops[0] ? mem_insn->ops[1].data : mem_insn->ops[0].data;
                 add_ssa_edge (gen_ctx, se->def, se->def_op_num, new_bb_insn, 1);
                 DEBUG (2, {
@@ -4714,6 +4729,8 @@ static void gvn_modify (gen_ctx_t gen_ctx) {
               insn->ops[1] = _MIR_new_var_op (ctx, temp_reg); /* changing mem */
               def_insn = DLIST_NEXT (MIR_insn_t, mem_insn);
               add_ssa_edge (gen_ctx, def_insn->data, 0, bb_insn, 1);
+              copy_gvn_info (bb_insn, (bb_insn_t) def_insn->data);
+              print_bb_insn_value (gen_ctx, bb_insn);
               gvn_insns_num++;
               DEBUG (2, {
                 fprintf (debug_file, "  changing curr insn to ");
@@ -6657,6 +6674,12 @@ static void jump_opt (gen_ctx_t gen_ctx) {
     bb_insn_t bb_insn;
     int i, start_nop, bound_nop;
 
+    /* Labels whose address is taken (laddr) can be reached by jmpi and must
+       not be removed (issue #424): */
+    for (bb_insn = DLIST_HEAD (bb_insn_t, bb->bb_insns); bb_insn != NULL;
+         bb_insn = DLIST_NEXT (bb_insn_t, bb_insn))
+      if (bb_insn->insn->code == MIR_LADDR)
+        bitmap_set_bit_p (temp_bitmap, bb_insn->insn->ops[1].u.label->ops[0].u.u);
     if ((bb_insn = DLIST_TAIL (bb_insn_t, bb->bb_insns)) == NULL) continue;
     if (bb_insn->insn->code == MIR_SWITCH) {
       start_nop = 1;
@@ -6669,6 +6692,12 @@ static void jump_opt (gen_ctx_t gen_ctx) {
     }
     for (i = start_nop; i < bound_nop; i++)
       bitmap_set_bit_p (temp_bitmap, bb_insn->insn->ops[i].u.label->ops[0].u.u);
+  }
+  /* The same holds for labels whose address is stored in lref data, and
+     gen_setup_lrefs would read the freed label insns (issue #424): */
+  for (MIR_lref_data_t lref = curr_func_item->u.func->first_lref; lref != NULL; lref = lref->next) {
+    bitmap_set_bit_p (temp_bitmap, lref->label->ops[0].u.u);
+    if (lref->label2 != NULL) bitmap_set_bit_p (temp_bitmap, lref->label2->ops[0].u.u);
   }
   for (bb = DLIST_EL (bb_t, curr_cfg->bbs, 2); bb != NULL; bb = next_bb) {
     edge_t e, out_e;
