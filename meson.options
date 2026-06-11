@@ -1,0 +1,2 @@
+option('c2mir', type: 'boolean', value: true,
+  description: 'Include the c2mir C11 frontend in libmir (matches the GNUmakefile libmir.a contents)')
