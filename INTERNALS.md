@@ -511,16 +511,25 @@ across assign/rewrite/reg_alloc.
 
 ## 15. Fork status
 
-Branches:
+Topic branches off upstream master, each independently PR-able:
 - `fix-laddr-out-flag` — the two RA fixes, submitted upstream as
   vnmakarov/mir#430 (LADDR OUT_FLAG; simplified RA for JMPI functions).
-- `meson` — fix-laddr-out-flag + meson build (static `libmir`, `mir`
-  dependency for subproject wraps) + this document.
+- `fix-gvn-load-ext` — GVN store-forwarding extension fix (upstream #423)
+  with c-tests/mir/issue423.mir.
+- `fix-jump-opt-lref-labels` — jump_opt keeps laddr/lref-referenced labels
+  (upstream #424) with c-tests/mir/issue424.mir.
+- `fix-aarch64-ld-stack-align` — the two `% 16` round-up bugs in
+  mir-aarch64.c (va_arg_builtin crashed on any binary128 long double stack
+  vararg; ff_call corrupted 9th+ FP args) with c-tests/new/va-ld-stack.c.
+
+Integration branch `meson` = all of the above merged + cherry-pick of
+upstream PR #420 (error-path null deref, `-x` annotated) + meson build
+(static `libmir`, `mir` dependency for subproject wraps) + this document.
+When upstream merges a topic PR, rebase `meson` and drop the topic.
 
 Upstream issues we have verified do **not** reproduce on current master
 (tested x86_64 + aarch64, O0-O2): #308 (DSE wrong-store, was bbv-branch),
-#249 (>32-bit absolute displacement truncation). Upstream issues that **do**
-affect master and matter to us: #423 (GVN sign-extension), #424 (jump_opt
-lref use-after-free), #426 (lref binary IO) — see the triage document in the
-slimcc repo (notes/mir-backend/upstream-triage.md) for the full review and
-priorities.
+#249 (>32-bit absolute displacement truncation). Remaining known-relevant
+upstream issue: #426 (lref data doesn't survive binary IO) — only matters
+for .bmir caching of computed-goto modules. See the triage document in the
+slimcc repo (notes/mir-backend/upstream-triage.md) for the full review.
