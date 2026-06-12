@@ -871,7 +871,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         } else if (var.type == MIR_T_LD) {
           mem_offset += 16;
         } else if (MIR_blk_type_p (var.type)) {
-          mem_offset += var.size;
+          mem_offset += (var.size + 7) / 8 * 8;
         } else { /* including RBLK */
           gp_offset += 8;
           if (gp_offset >= 48) mem_offset += 8;
