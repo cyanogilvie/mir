@@ -466,14 +466,19 @@ Known pre-existing upstream failures (not caused by this fork's changes):
 3 gen-bb long-double c-tests on aarch64 (20020413-1, 20030914-1, regstack-1)
 fail at the upstream base commit too; x86_64 passes them. We don't use BBV.
 
-musl note: the *library* is musl-clean (sysconf/mmap/mprotect only); what
-broke on Alpine was the **test harness** — driver dlopen tables (#307),
-BusyBox diff options, and c2mir's aarch64 wchar_t — all fixed on the
-`support-musl-std-libs` branch. Validated on Alpine 3.23.4 aarch64: interp
-c-tests fully green; gen modes fail only the exotic jcall.c (fails on a
-feature we never emit); all bootstraps pass given ~1.5GB+ RAM (the
-bb-versioning bootstrap is the suite's peak memory consumer and gets
-OOM-killed on a 1GB box).
+musl note: the *library* needed one real fix beyond the test harness. The
+harness issues — driver dlopen tables (#307), BusyBox diff options, and
+c2mir's aarch64 wchar_t — are fixed on the `support-musl-std-libs` branch.
+The real library bug: lazy BB generation broke whenever code mappings ended
+up out of direct-branch range of each other, which musl's mmap-heavy
+mallocng makes routine at bootstrap scale (aarch64 bb thunks clobbered x9 =
+bb_version in the far redirect form → wrapper passed its own address as
+bb_version → garbage attrs grew spot2attr toward tens of GB; deterministic
+~8GB OOM of c2mir-bb-bootstrap-test). Fixed on
+`fix-aarch64-bb-thunk-clobber` (upstream #436 / PR #437); see §15.
+Validated on Alpine 3.23.4 aarch64 with the fix: full `make test` green
+except the exotic jcall.c (fails on a feature we never emit);
+c2mir-bb-bootstrap-test passes in ~7s at 535MB peak.
 
 ---
 
@@ -527,6 +532,19 @@ Topic branches off upstream master, each independently PR-able:
   #307): musl dlopen path in the three driver tables, BusyBox-safe diff
   probing in runtests.sh, and c2mir's aarch64 wchar_t corrected to unsigned
   (AAPCS64; musl's alltypes.h redeclares it, breaking the bootstrap).
+- `fix-aarch64-bb-thunk-clobber` — lazy BB generation with out-of-range
+  code mappings (upstream #436, PR #437). Two parts: (1) the aarch64 bb
+  thunk's branch to the bb wrapper used `_MIR_redirect_thunk`, whose far
+  form `ldr x9,8; br x9` clobbers x9 = the bb_version argument; the wrapper
+  then received its own address as bb_version and garbage attrs[].spot grew
+  spot2attr toward tens of GB (the musl bb-bootstrap OOM). Redirect is now
+  parameterized by temp reg; the bb thunk uses x10 (x16/x17 are
+  RA-allocatable, hence unsafe across bb borders). riscv64/ppc64 already
+  did the equivalent; x86_64 was safe (payload r10, far redirect r11).
+  (2) Code holders are carved from one contiguous 128MB address-space
+  reservation (64-bit non-Windows, VA-only cost) so all JIT code stays
+  within direct-branch range — without it, generated bb code dies in
+  setup_rel ("too big offset") branching to far successor thunks.
 
 Integration branch `meson` = all of the above merged + cherry-pick of
 upstream PR #420 (error-path null deref, `-x` annotated) + meson build
