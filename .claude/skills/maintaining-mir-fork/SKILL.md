@@ -1,6 +1,6 @@
 ---
 name: maintaining-mir-fork
-description: Branch topology, upstream contribution workflow, test commands, and per-platform test baselines for this MIR fork (cyanogilvie/mir, upstream vnmakarov/mir). Use when fixing MIR bugs, adding regression tests, running the c-tests suite or bootstraps, rebasing the meson branch, validating on aarch64 or musl, or filing upstream PRs.
+description: Branch topology, upstream contribution workflow, test commands, and per-platform test baselines for this MIR fork (cyanogilvie/mir, upstream vnmakarov/mir). Use when fixing MIR bugs, adding regression tests, running the c-tests suite or bootstraps, rebasing the debug-support branch, validating on aarch64 or musl, or filing upstream PRs.
 ---
 
 # Maintaining the MIR fork
@@ -13,16 +13,16 @@ This is a maintained fork of vnmakarov/mir (MIT JIT; upstream near-dormant since
 
 - `origin` = upstream vnmakarov/mir, `fork` = git@github.com:cyanogilvie/mir.
 - **One topic branch per fix, branched off upstream `master`**, each independently PR-able with its own regression test: `fix-laddr-out-flag`, `fix-gvn-load-ext`, `fix-jump-opt-lref-labels`, `fix-aarch64-ld-stack-align`, `fix-aarch64-bb-thunk-clobber`, `support-musl-std-libs`, `pr-420` (cherry-picked foreign PR).
-- **`meson` = the integration branch**: all topic branches merged + fork-only files (meson.build, meson.options, INTERNALS.md, this skill). Consumers (slimcc/tclmir wraps) pin this branch. When upstream merges a PR, rebase `meson` and update consumers' wrap revisions.
+- **`debug-support` = the integration branch** (renamed from `meson` 2026-06-15 as the source-debug extensions grew the scope; the stale remote `meson` was deleted): all topic branches merged + fork-only files (meson.build, meson.options, INTERNALS.md, this skill). Consumers (slimcc/tclmir/jitc wraps) pin this branch. When upstream merges a PR, rebase `debug-support` and update consumers' wrap revisions. This is the aggregate/collaboration branch hosted on the fork; the source-debug work is being prepared as a PR (see the topic branches + `/tmp/mir-debug-support.md`).
 
 ### Workflow for a new fix
 
 1. Branch off upstream `master`; make the fix.
 2. Add a regression test: `c-tests/mir/NAME.mir` (self-checking, `main`'s exit code; optional `.expect` stdout / `.expectrc` exit code / `.mach`/`.nomach` arch filters) or `c-tests/new/NAME.c`. Verify it fails before / passes after.
-3. Validate (commands below), merge into `meson`, push both branches to `fork`.
+3. Validate (commands below), merge into `debug-support`, push both branches to `fork`.
 4. File upstream: `gh pr create -R vnmakarov/mir --head cyanogilvie:BRANCH --body-file ...`.
 
-Pulling someone else's upstream PR: `git fetch origin pull/N/head:pr-N` then `git cherry-pick -x` onto a local branch (preserves authorship), merge to `meson`.
+Pulling someone else's upstream PR: `git fetch origin pull/N/head:pr-N` then `git cherry-pick -x` onto a local branch (preserves authorship), merge to `debug-support`.
 
 ## Build & test
 
