@@ -27,7 +27,7 @@ if host_machine.system() == 'windows'
   mir_deps += [cc.find_library('kernel32'), cc.find_library('psapi')]
 endif
 
-mir_srcs = files('mir.c', 'mir-gen.c', 'mir-dwarf.c')
+mir_srcs = files('mir.c', 'mir-gen.c', 'mir-dwarf.c', 'mir-dwarf-gdb.c')
 if get_option('c2mir')
   mir_srcs += files('c2mir/c2mir.c')
 endif
