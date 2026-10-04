@@ -4072,6 +4072,9 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
 
   mir_assert (func_item->item_type == MIR_func_item);
   vn_empty (ctx);
+  /* Insns created here (inlining glue) are stamped with ctx's current source
+     location: don't inherit whatever the last simplified function left there. */
+  ctx->curr_source_file_id = ctx->curr_source_line = 0;
   func = func_item->u.func;
   original_func_insns_num = func_insns_num = DLIST_LENGTH (MIR_insn_t, func->insns);
   func_top_alloca = func_alloca_features (ctx, func, &func_top_alloca_used_p, NULL, &alloca_size);
@@ -4123,6 +4126,10 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     }
     func_insns_num += called_func_insns_num;
     inlined_calls++;
+    /* The glue for this inlining (arg/result moves, block bounds, labels) belongs
+       to the call site; the copied callee insns keep their own locations. */
+    ctx->curr_source_file_id = call->file_id;
+    ctx->curr_source_line = call->line;
     res_types = call->ops[0].u.ref->u.proto->res_types;
     prev_insn = DLIST_PREV (MIR_insn_t, call);
     if ((anchor = DLIST_NEXT (MIR_insn_t, call)) == NULL) {
@@ -4270,6 +4277,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
                                         : DLIST_NEXT (MIR_insn_t, prev_insn));
   }
   mir_assert (VARR_LENGTH (MIR_insn_t, anchors) == 0 && VARR_LENGTH (size_t, alloca_sizes) == 0);
+  ctx->curr_source_file_id = ctx->curr_source_line = 0; /* function-entry insns below */
   if (func_top_alloca != NULL) {
     if (!func_top_alloca_used_p) {
       MIR_remove_insn (ctx, func_item, func_top_alloca);
