@@ -305,6 +305,30 @@ typedef struct MIR_reg_loc {
   int64_t fp_offset; /* byte offset of the register's stack home from the frame pointer */
 } MIR_reg_loc_t;
 
+/* Call-frame information: how to find the caller's frame (the CFA, i.e. the
+   stack pointer value at the call site) and saved registers at each point of a
+   function's generated code.  MIR_gen fills MIR_func.cfi with these events, in
+   code-offset order, on targets that describe their prologues/epilogues
+   (x86_64 SysV, aarch64); a debug-info emitter (mir-debug) turns them into
+   DWARF .debug_frame so a debugger can unwind through generated code.  Each
+   event takes effect at code_offset; the rules in force at the function entry
+   are the target ABI's (CFA = sp at the call, return address per the ABI).
+   Register numbers are DWARF register numbers for the target. */
+typedef enum {
+  MIR_CFI_DEF_CFA,       /* CFA = reg + offset */
+  MIR_CFI_OFFSET,        /* reg is saved at CFA + offset */
+  MIR_CFI_RESTORE,       /* reg has its function-entry value again */
+  MIR_CFI_REMEMBER_STATE, /* push the current rule set */
+  MIR_CFI_RESTORE_STATE, /* pop it (code after an epilogue continues with body rules) */
+} MIR_cfi_kind_t;
+
+typedef struct MIR_cfi {
+  uint32_t code_offset; /* byte offset into the function's machine code */
+  uint8_t kind;         /* MIR_cfi_kind_t */
+  uint16_t reg;         /* DWARF register number (DEF_CFA, OFFSET, RESTORE) */
+  int32_t offset;       /* DEF_CFA: CFA offset from reg; OFFSET: save slot offset from CFA */
+} MIR_cfi_t;
+
 /* Definition of double list of insns */
 DEF_DLIST (MIR_insn_t, insn_link);
 
@@ -338,6 +362,9 @@ typedef struct MIR_func {
   size_t line_map_len;      /* number of entries in line_map */
   MIR_reg_loc_t *reg_locs;  /* local reg -> frame slot, or NULL; filled by MIR_gen in spill-all mode */
   size_t reg_locs_len;      /* number of entries in reg_locs */
+  MIR_cfi_t *cfi;  /* frame-unwind events, or NULL when the target doesn't describe its frames;
+                      non-NULL with cfi_len 0 means the entry rules hold throughout */
+  size_t cfi_len;  /* number of entries in cfi */
 } *MIR_func_t;
 
 typedef struct MIR_proto {

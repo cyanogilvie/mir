@@ -205,6 +205,17 @@ DEF_VARR (MIR_op_t);
 DEF_VARR (MIR_insn_t);
 DEF_VARR (MIR_line_map_t);
 DEF_VARR (MIR_reg_loc_t);
+DEF_VARR (MIR_cfi_t);
+
+/* A frame-unwind event a target attached to one of its prologue/epilogue insns
+   (gen_cfi_mark); target_translate turns it into a MIR_cfi_t at the insn's
+   start or end code offset (gen_record_cfi). */
+typedef struct cfi_mark {
+  MIR_insn_t insn;
+  int at_start_p; /* event takes effect before the insn rather than after it */
+  MIR_cfi_t cfi;  /* code_offset filled in during translation */
+} cfi_mark_t;
+DEF_VARR (cfi_mark_t);
 
 struct gen_ctx {
   MIR_context_t ctx;
@@ -238,6 +249,9 @@ struct gen_ctx {
   VARR (MIR_op_t) * temp_ops;
   VARR (MIR_line_map_t) * line_map; /* (code_offset, file, line) per insn during target_translate */
   VARR (MIR_reg_loc_t) * reg_locs;  /* (reg, fp_offset) for stack-homed locals in spill-all mode */
+  VARR (cfi_mark_t) * cfi_marks;    /* prologue/epilogue unwind events, keyed by insn */
+  VARR (MIR_cfi_t) * cfi;           /* the func's unwind events during target_translate */
+  int cfi_p;                        /* target described this func's frame (marks are complete) */
   VARR (MIR_insn_t) * temp_insns, *temp_insns2;
   VARR (bb_insn_t) * temp_bb_insns, *temp_bb_insns2;
   VARR (loop_node_t) * loop_nodes, *queue_nodes, *loop_entries; /* used in building loop tree */
@@ -280,6 +294,9 @@ struct gen_ctx {
 #define temp_ops gen_ctx->temp_ops
 #define gen_line_map gen_ctx->line_map
 #define gen_reg_locs gen_ctx->reg_locs
+#define gen_cfi_marks gen_ctx->cfi_marks
+#define gen_cfi gen_ctx->cfi
+#define gen_cfi_p gen_ctx->cfi_p
 #define temp_insns gen_ctx->temp_insns
 #define temp_insns2 gen_ctx->temp_insns2
 #define temp_bb_insns gen_ctx->temp_bb_insns
@@ -323,6 +340,27 @@ DEF_VARR (MIR_code_reloc_t);
    coalescing runs with the same location.  Targets call this from their emit
    loop just before appending an insn's machine code.  No-op for unlocated insns
    so non-debug compiles cost nothing but the branch. */
+/* Attach a frame-unwind event to a prologue/epilogue insn (see cfi_mark_t).
+   reg is a DWARF register number. */
+static void gen_cfi_mark (gen_ctx_t gen_ctx, MIR_insn_t insn, int at_start_p, MIR_cfi_kind_t kind,
+                          int reg, int64_t offset) {
+  cfi_mark_t m = {insn, at_start_p, {0, (uint8_t) kind, (uint16_t) reg, (int32_t) offset}};
+  VARR_PUSH (cfi_mark_t, gen_cfi_marks, m);
+}
+
+/* Called by target_translate for every emitted insn with its code span. */
+static void gen_record_cfi (gen_ctx_t gen_ctx, MIR_insn_t insn, size_t start, size_t end) {
+  size_t n = VARR_LENGTH (cfi_mark_t, gen_cfi_marks);
+  if (n == 0) return;
+  cfi_mark_t *marks = VARR_ADDR (cfi_mark_t, gen_cfi_marks);
+  for (size_t i = 0; i < n; i++)
+    if (marks[i].insn == insn) {
+      MIR_cfi_t e = marks[i].cfi;
+      e.code_offset = (uint32_t) (marks[i].at_start_p ? start : end);
+      VARR_PUSH (MIR_cfi_t, gen_cfi, e);
+    }
+}
+
 static void gen_record_line (gen_ctx_t gen_ctx, size_t code_offset, MIR_insn_t insn) {
   if (insn->line == 0 && insn->file_id == 0) return;
   size_t n = VARR_LENGTH (MIR_line_map_t, gen_line_map);
@@ -9535,6 +9573,8 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
       print_CFG (gen_ctx, TRUE, TRUE, TRUE, FALSE, output_bb_live_info);
     });
   }
+  VARR_TRUNC (cfi_mark_t, gen_cfi_marks, 0);
+  gen_cfi_p = FALSE;
   target_make_prolog_epilog (gen_ctx, func_used_hard_regs, func_stack_slots_num);
   target_split_insns (gen_ctx);
   DEBUG (2, {
@@ -9543,6 +9583,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   });
   if (machine_code_p) {
     VARR_TRUNC (MIR_line_map_t, gen_line_map, 0);
+    VARR_TRUNC (MIR_cfi_t, gen_cfi, 0);
     code = target_translate (gen_ctx, &code_len);
     machine_code = func_item->u.func->call_addr = _MIR_publish_code (ctx, code, code_len);
     target_rebase (gen_ctx, func_item->u.func->call_addr);
@@ -9572,6 +9613,22 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
         func_item->u.func->reg_locs_len = rl_len;
       }
       VARR_TRUNC (MIR_reg_loc_t, gen_reg_locs, 0);
+      /* Frame-unwind events.  A described frame gets a non-NULL array even with no
+         events (a frameless function: the entry rules hold throughout). */
+      size_t cfi_len = VARR_LENGTH (MIR_cfi_t, gen_cfi);
+      if (func_item->u.func->cfi != NULL) {
+        MIR_free (gen_alloc (gen_ctx), func_item->u.func->cfi);
+        func_item->u.func->cfi = NULL;
+        func_item->u.func->cfi_len = 0;
+      }
+      if (gen_cfi_p) {
+        MIR_cfi_t *cfi = gen_malloc (gen_ctx, (cfi_len ? cfi_len : 1) * sizeof (MIR_cfi_t));
+        if (cfi_len != 0) memcpy (cfi, VARR_ADDR (MIR_cfi_t, gen_cfi), cfi_len * sizeof (MIR_cfi_t));
+        func_item->u.func->cfi = cfi;
+        func_item->u.func->cfi_len = cfi_len;
+      }
+      VARR_TRUNC (MIR_cfi_t, gen_cfi, 0);
+      VARR_TRUNC (cfi_mark_t, gen_cfi_marks, 0);
     }
 #if MIR_GEN_CALL_TRACE
     func_item->u.func->call_addr = _MIR_get_wrapper (ctx, func_item, print_and_execute_wrapper);
@@ -9760,6 +9817,9 @@ void MIR_gen_init (MIR_context_t ctx) {
   VARR_CREATE (MIR_op_t, temp_ops, alloc, 16);
   VARR_CREATE (MIR_line_map_t, gen_line_map, alloc, 0);
   VARR_CREATE (MIR_reg_loc_t, gen_reg_locs, alloc, 0);
+  VARR_CREATE (cfi_mark_t, gen_cfi_marks, alloc, 0);
+  VARR_CREATE (MIR_cfi_t, gen_cfi, alloc, 0);
+  gen_cfi_p = FALSE;
   VARR_CREATE (MIR_insn_t, temp_insns, alloc, 16);
   VARR_CREATE (MIR_insn_t, temp_insns2, alloc, 16);
   VARR_CREATE (bb_insn_t, temp_bb_insns, alloc, 16);
@@ -9833,6 +9893,8 @@ void MIR_gen_finish (MIR_context_t ctx) {
   VARR_DESTROY (MIR_op_t, temp_ops);
   VARR_DESTROY (MIR_line_map_t, gen_line_map);
   VARR_DESTROY (MIR_reg_loc_t, gen_reg_locs);
+  VARR_DESTROY (cfi_mark_t, gen_cfi_marks);
+  VARR_DESTROY (MIR_cfi_t, gen_cfi);
   VARR_DESTROY (MIR_insn_t, temp_insns);
   VARR_DESTROY (MIR_insn_t, temp_insns2);
   VARR_DESTROY (bb_insn_t, temp_bb_insns);

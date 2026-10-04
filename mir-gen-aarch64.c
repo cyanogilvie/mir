@@ -1017,6 +1017,19 @@ static void fsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t bas
 }
 #endif
 
+/* DWARF register numbers (AArch64 DWARF ABI) for MIR hard regs. */
+static int target_dwarf_reg (MIR_reg_t hard_reg) {
+  if (hard_reg <= SP_HARD_REG) return (int) hard_reg; /* x0-x30 = 0-30, sp = 31 */
+  return 64 + (int) (hard_reg - V0_HARD_REG);        /* v0-v31 = 64-95 */
+}
+enum { DWARF_SP = 31, DWARF_FP = 29, DWARF_LR = 30, DWARF_X10 = 10 };
+
+/* The unwind events below describe the frame for debuggers: the CFA is sp at
+   the call.  After "sub sp, sp, frame_size; ... mov fp, sp" the CFA is
+   fp + frame_size for the whole body (sp moves for stack args/alloca).  The
+   epilogue reloads fp before sp, so the CFA is tracked off r10 (the saved fp)
+   in between.  Its CFA changes are bracketed with remember/restore state so any
+   code laid out after the ret keeps the body rules. */
 static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_regs,
                                        size_t stack_slots_num) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -1035,6 +1048,7 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
       else
         saved_fregs_num++;
     }
+  gen_cfi_p = TRUE;
   if (leaf_p && !alloca_p && saved_iregs_num == 0 && saved_fregs_num == 0 && !func->vararg_p
       && stack_slots_num == 0 && !block_arg_func_p && small_aggregate_save_area == 0)
     return;
@@ -1076,18 +1090,23 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op, treg_op2);
   }
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = sp - (frame_size|t) */
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_SP, (int64_t) frame_size);
   if (save_prev_stack_p)
     gen_mov (gen_ctx, anchor, MIR_MOV,
              _MIR_new_var_mem_op (ctx, MIR_T_I64, 16, SP_HARD_REG, MIR_NON_VAR, 1),
              treg_op); /* mem[sp + 16] = treg */
-  if (!func->jret_p)
-    gen_mov (gen_ctx, anchor, MIR_MOV,
-             _MIR_new_var_mem_op (ctx, MIR_T_I64, 8, SP_HARD_REG, MIR_NON_VAR, 1),
-             _MIR_new_var_op (ctx, LINK_HARD_REG)); /* mem[sp + 8] = lr */
-  gen_mov (gen_ctx, anchor, MIR_MOV,
-           _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, SP_HARD_REG, MIR_NON_VAR, 1),
-           _MIR_new_var_op (ctx, FP_HARD_REG));             /* mem[sp] = fp */
-  gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op); /* fp = sp */
+  if (!func->jret_p) {
+    new_insn = gen_mov (gen_ctx, anchor, MIR_MOV,
+                        _MIR_new_var_mem_op (ctx, MIR_T_I64, 8, SP_HARD_REG, MIR_NON_VAR, 1),
+                        _MIR_new_var_op (ctx, LINK_HARD_REG)); /* mem[sp + 8] = lr */
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, DWARF_LR, 8 - (int64_t) frame_size);
+  }
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV,
+                      _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, SP_HARD_REG, MIR_NON_VAR, 1),
+                      _MIR_new_var_op (ctx, FP_HARD_REG)); /* mem[sp] = fp */
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, DWARF_FP, -(int64_t) frame_size);
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op, sp_reg_op); /* fp = sp */
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_FP, (int64_t) frame_size);
 #if !defined(__APPLE__)
   if (func->vararg_p) {  // ??? saving only regs corresponding to ...
     MIR_reg_t base = SP_HARD_REG;
@@ -1123,15 +1142,19 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   for (i = 0; i <= MAX_HARD_REG; i++)
     if (!target_call_used_hard_reg_p (i, MIR_T_UNDEF) && bitmap_bit_p (used_hard_regs, i)) {
       if (i < V0_HARD_REG) {
-        gen_mov (gen_ctx, anchor, MIR_MOV,
-                 new_hard_reg_mem_op (gen_ctx, anchor, MIR_T_I64, offset, FP_HARD_REG),
-                 _MIR_new_var_op (ctx, i));
+        new_insn = gen_mov (gen_ctx, anchor, MIR_MOV,
+                            new_hard_reg_mem_op (gen_ctx, anchor, MIR_T_I64, offset, FP_HARD_REG),
+                            _MIR_new_var_op (ctx, i));
+        gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, target_dwarf_reg (i),
+                      (int64_t) offset - (int64_t) frame_size);
         offset += 8;
       } else {
         if (offset % 16 != 0) offset = (offset + 15) / 16 * 16;
         new_insn = gen_mov (gen_ctx, anchor, MIR_LDMOV,
                             new_hard_reg_mem_op (gen_ctx, anchor, MIR_T_LD, offset, FP_HARD_REG),
                             _MIR_new_var_op (ctx, i));
+        gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, target_dwarf_reg (i),
+                      (int64_t) offset - (int64_t) frame_size);
 #if defined(__APPLE__)
         /* MIR API can change insn code - change it back as we need to generate code to save all
          * vreg. */
@@ -1174,9 +1197,12 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   if (!func->jret_p)
     gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, LINK_HARD_REG),
              _MIR_new_var_mem_op (ctx, MIR_T_I64, 8, FP_HARD_REG, MIR_NON_VAR, 1));
-  gen_mov (gen_ctx, anchor, MIR_MOV, treg_op2, fp_reg_op); /* r10 = fp */
-  gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op,
-           _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, FP_HARD_REG, MIR_NON_VAR, 1));
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, treg_op2, fp_reg_op); /* r10 = fp */
+  gen_cfi_mark (gen_ctx, new_insn, TRUE, MIR_CFI_REMEMBER_STATE, 0, 0);
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_X10, (int64_t) frame_size);
+  new_insn = gen_mov (gen_ctx, anchor, MIR_MOV, fp_reg_op,
+                      _MIR_new_var_mem_op (ctx, MIR_T_I64, 0, FP_HARD_REG, MIR_NON_VAR, 1));
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_RESTORE, DWARF_FP, 0);
   if (frame_size < (1 << 12)) {
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, treg_op2, MIR_new_int_op (ctx, frame_size));
   } else {
@@ -1185,6 +1211,8 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, treg_op2, treg_op);
   }
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = r10 + (frame_size|t) */
+  gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_SP, 0);
+  gen_cfi_mark (gen_ctx, anchor, FALSE, MIR_CFI_RESTORE_STATE, 0, 0);
 }
 
 struct pattern {
@@ -2493,8 +2521,10 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         exit (1);
       } else {
         gen_assert (replacement != NULL);
-        gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
+        size_t start = VARR_LENGTH (uint8_t, result_code);
+        gen_record_line (gen_ctx, start, insn);
         out_insn (gen_ctx, insn, replacement, NULL);
+        gen_record_cfi (gen_ctx, insn, start, VARR_LENGTH (uint8_t, result_code));
       }
     }
   }

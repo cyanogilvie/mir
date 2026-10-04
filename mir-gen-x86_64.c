@@ -1147,6 +1147,23 @@ static void dsave (gen_ctx_t gen_ctx, MIR_insn_t anchor, int disp, MIR_reg_t har
            _MIR_new_var_op (ctx, hard_reg));
 }
 
+/* DWARF register numbers (System V x86-64 psABI) for MIR hard regs. */
+static int target_dwarf_reg (MIR_reg_t hard_reg) {
+  static const int gp[16] = {0, 2, 1, 3, 7, 6, 4, 5, 8, 9, 10, 11, 12, 13, 14, 15};
+  if (hard_reg <= R15_HARD_REG) return gp[hard_reg];
+  gen_assert (hard_reg >= XMM0_HARD_REG && hard_reg <= XMM15_HARD_REG);
+  return 17 + (int) (hard_reg - XMM0_HARD_REG);
+}
+enum { DWARF_RSP = 7, DWARF_RBP = 6 };
+
+/* The unwind events below describe the frame for debuggers: the CFA is the
+   value of sp before the call (entry sp + 8).  With a frame pointer, bp =
+   CFA - 16 once set up and the CFA is tracked off bp for the whole body
+   (sp moves for stack args/alloca); without one, sp is constant between the
+   prologue and the epilogue (MIR keeps the frame pointer whenever sp would move,
+   see prohibit_omitting_fp).  The epilogue's CFA changes are bracketed with
+   remember/restore state so any code laid out after the ret keeps the body
+   rules. */
 static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_regs,
                                        size_t stack_slots_num) {
   MIR_context_t ctx = gen_ctx->ctx;
@@ -1172,6 +1189,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
         && bitmap_bit_p (used_hard_regs, i))
       saved_hard_regs_size += 16;
 #endif
+#if !defined(MIR_NO_RED_ZONE_ABI) && !defined(_WIN32)
+  gen_cfi_p = TRUE; /* SysV frame shapes are described; no-red-zone/Win64 ones aren't (yet) */
+#endif
   if (leaf_p && !alloca_p && !block_arg_func_p && saved_hard_regs_size == 0 && !func->vararg_p
       && stack_slots_num == 0)
     return;
@@ -1191,9 +1211,11 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                              _MIR_new_var_mem_op (ctx, MIR_T_I64, -8, SP_HARD_REG, MIR_NON_VAR, 1),
                              fp_reg_op);
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* -8(sp) = bp */
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, DWARF_RBP, -16);
     /* Use add for matching LEA: */
     new_insn = MIR_new_insn (ctx, MIR_ADD, fp_reg_op, sp_reg_op, MIR_new_int_op (ctx, -8));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = sp - 8 */
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_RBP, 16);
 #endif
   }
 #ifdef _WIN32
@@ -1214,6 +1236,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
   new_insn = MIR_new_insn (ctx, MIR_SUB, sp_reg_op, sp_reg_op,
                            MIR_new_int_op (ctx, block_size + service_area_size));
   gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp -= block size + service_area_size */
+  if (!keep_fp_p)
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_RSP,
+                  (int64_t) (block_size + service_area_size) + 8);
   bp_saved_reg_offset = block_size;
 #ifdef MIR_NO_RED_ZONE_ABI
   if (keep_fp_p) {
@@ -1270,6 +1295,10 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
                         _MIR_new_var_mem_op (ctx, MIR_T_I64, offset, base_reg, MIR_NON_VAR, 1),
                         _MIR_new_var_op (ctx, (MIR_reg_t) i));
       gen_add_insn_before (gen_ctx, anchor, new_insn); /* disp(bp|sp) = saved hard reg */
+      /* CFA = bp + 16, or sp + block size + service area + 8 */
+      gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_OFFSET, target_dwarf_reg ((MIR_reg_t) i),
+                    keep_fp_p ? offset - 16
+                              : offset - (int64_t) (block_size + service_area_size) - 8);
       offset += 8;
     }
   /* Epilogue: */
@@ -1304,6 +1333,9 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, sp_reg_op,
                              MIR_new_int_op (ctx, block_size + service_area_size));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp += block size + service_area_size */
+    gen_cfi_mark (gen_ctx, new_insn, TRUE, MIR_CFI_REMEMBER_STATE, 0, 0);
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_RSP, 8);
+    gen_cfi_mark (gen_ctx, anchor, FALSE, MIR_CFI_RESTORE_STATE, 0, 0);
   } else {
 #ifdef MIR_NO_RED_ZONE_ABI
     new_insn = MIR_new_insn (ctx, MIR_MOV, temp_reg_op, fp_reg_op);
@@ -1317,9 +1349,13 @@ static void target_make_prolog_epilog (gen_ctx_t gen_ctx, bitmap_t used_hard_reg
 #else
     new_insn = MIR_new_insn (ctx, MIR_ADD, sp_reg_op, fp_reg_op, MIR_new_int_op (ctx, 8));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* sp = bp + 8 */
+    gen_cfi_mark (gen_ctx, new_insn, TRUE, MIR_CFI_REMEMBER_STATE, 0, 0);
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_DEF_CFA, DWARF_RSP, 8);
     new_insn = MIR_new_insn (ctx, MIR_MOV, fp_reg_op,
                              _MIR_new_var_mem_op (ctx, MIR_T_I64, -8, SP_HARD_REG, MIR_NON_VAR, 1));
     gen_add_insn_before (gen_ctx, anchor, new_insn); /* bp = -8(sp) */
+    gen_cfi_mark (gen_ctx, new_insn, FALSE, MIR_CFI_RESTORE, DWARF_RBP, 0);
+    gen_cfi_mark (gen_ctx, anchor, FALSE, MIR_CFI_RESTORE_STATE, 0, 0);
 #endif
   }
 }
@@ -2944,10 +2980,9 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         ind = find_insn_pattern (gen_ctx, insn, NULL);
       gen_assert (ind >= 0);
       gen_record_line (gen_ctx, VARR_LENGTH (uint8_t, result_code), insn);
-#ifndef NDEBUG
       size_t len_before = VARR_LENGTH (uint8_t, result_code);
-#endif
       out_insn (gen_ctx, insn, patterns[ind].replacement, NULL);
+      gen_record_cfi (gen_ctx, insn, len_before, VARR_LENGTH (uint8_t, result_code));
 #ifndef NDEBUG
       size_t insn_len = VARR_LENGTH (uint8_t, result_code) - len_before;
       if (insn_len > (size_t) patterns[ind].max_insn_size && insn->code != MIR_SWITCH) {

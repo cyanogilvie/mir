@@ -20,6 +20,7 @@
      for each generated function fn:
        MIR_debug_add_func (d, fn->name, fn->machine_code, fn->code_len,
                            fn->line_map, fn->line_map_len);
+       if (fn->cfi != NULL) MIR_debug_add_func_frame (d, fn->cfi, fn->cfi_len);
        for each local var v with reg r and type t:
          int64_t off; MIR_reg_frame_offset (fn, r, &off);
          MIR_debug_add_var (d, v->name, v->is_param, t, off, deref_p, 0);
@@ -99,6 +100,13 @@ extern void MIR_debug_add_param_type (MIR_debug_t d, MIR_debug_type_t fn, MIR_de
    recently added function.  */
 extern void MIR_debug_add_func (MIR_debug_t d, const char *name, const void *addr, size_t size,
                                 const MIR_line_map_t *line_map, size_t line_map_len);
+/* Frame-unwind events for the most recently added function (MIR_func.cfi /
+   cfi_len from MIR_gen; copied), emitted as DWARF .debug_frame so a debugger can
+   unwind through the generated code to its callers.  Call it whenever
+   MIR_func.cfi is non-NULL -- also with cfi_len 0, which describes a frameless
+   function.  Functions without it get no unwind info (the debugger falls back
+   to heuristics, which generally fail for MIR code). */
+extern void MIR_debug_add_func_frame (MIR_debug_t d, const MIR_cfi_t *cfi, size_t cfi_len);
 /* Location of the variable, built as the DWARF expression
      DW_OP_fbreg(fp_offset) [DW_OP_deref] [DW_OP_plus_uconst(member_offset)].
    fp_offset: the frame-pointer-relative slot, from MIR_reg_frame_offset.

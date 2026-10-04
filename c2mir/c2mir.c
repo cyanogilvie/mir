@@ -12524,6 +12524,7 @@ int c2mir_get_debug_object (MIR_context_t ctx, void **buf, size_t *size) {
     if (func->machine_code == NULL) continue;
     MIR_debug_add_func (c2m_dbg, func->name, func->machine_code, func->code_len, func->line_map,
                         func->line_map_len);
+    if (func->cfi != NULL) MIR_debug_add_func_frame (c2m_dbg, func->cfi, func->cfi_len);
     for (size_t v = c2m_dbg_funcrecs[i].first_var;
          v < c2m_dbg_funcrecs[i].first_var + c2m_dbg_funcrecs[i].n_vars; v++) {
       c2m_dbgvar_t *dv = &c2m_dbg_vars[v];
