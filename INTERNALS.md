@@ -3,8 +3,10 @@
 This document is for people *maintaining* MIR (this fork in particular), not
 for people using it. It complements the upstream docs: `MIR.md` (the IR
 reference), `HOW-TO-PORT-MIR.md` (the porting contract), and
-`CUSTOM-ALLOCATORS.md`. File:line references are against this fork's `meson`
-branch (upstream master a6db87d4 + two RA fixes + meson build).
+`CUSTOM-ALLOCATORS.md`. File:line references were taken against this fork's
+`meson` branch (upstream master a6db87d4 + two RA fixes + meson build); the
+branch is now `debug-support`, rebased onto upstream master 2026-10, so line
+numbers have drifted: treat them as approximate and search by symbol.
 
 Production context for this fork: in-process JIT consuming `MIR_gen` with the
 eager gen interface, modules built programmatically (slimcc frontend, later
@@ -518,20 +520,23 @@ across assign/rewrite/reg_alloc.
 
 ## 15. Fork status
 
-Topic branches off upstream master, each independently PR-able:
-- `fix-laddr-out-flag` — the two RA fixes, submitted upstream as
-  vnmakarov/mir#430 (LADDR OUT_FLAG; simplified RA for JMPI functions).
-- `fix-gvn-load-ext` — GVN store-forwarding extension fix (upstream #423)
-  with c-tests/mir/issue423.mir.
+Topic branches off upstream master, each independently PR-able. Merged
+upstream by 2026-10 (the history below is kept for the bug-class context):
+- `fix-laddr-out-flag` — the two RA fixes (vnmakarov/mir#430: LADDR
+  OUT_FLAG; simplified RA for JMPI functions).
+- `fix-gvn-load-ext` — GVN store-forwarding extension fix (upstream #423,
+  PR #432) with c-tests/mir/issue423.mir.
 - `fix-jump-opt-lref-labels` — jump_opt keeps laddr/lref-referenced labels
-  (upstream #424) with c-tests/mir/issue424.mir.
+  (upstream #424, PR #433) with c-tests/mir/issue424.mir.
 - `fix-aarch64-ld-stack-align` — the two `% 16` round-up bugs in
   mir-aarch64.c (va_arg_builtin crashed on any binary128 long double stack
-  vararg; ff_call corrupted 9th+ FP args) with c-tests/new/va-ld-stack.c.
+  vararg; ff_call corrupted 9th+ FP args) with c-tests/new/va-ld-stack.c
+  (PR #434).
 - `support-musl-std-libs` — makes the suite run on musl/Alpine (upstream
-  #307): musl dlopen path in the three driver tables, BusyBox-safe diff
-  probing in runtests.sh, and c2mir's aarch64 wchar_t corrected to unsigned
-  (AAPCS64; musl's alltypes.h redeclares it, breaking the bootstrap).
+  #307, PR #435): musl dlopen path in the three driver tables, BusyBox-safe
+  diff probing in runtests.sh, and c2mir's aarch64 wchar_t corrected to
+  unsigned (AAPCS64; musl's alltypes.h redeclares it, breaking the
+  bootstrap).
 - `fix-aarch64-bb-thunk-clobber` — lazy BB generation with out-of-range
   code mappings (upstream #436, PR #437). Two parts: (1) the aarch64 bb
   thunk's branch to the bb wrapper used `_MIR_redirect_thunk`, whose far
@@ -545,11 +550,29 @@ Topic branches off upstream master, each independently PR-able:
   reservation (64-bit non-Windows, VA-only cost) so all JIT code stays
   within direct-branch range — without it, generated bb code dies in
   setup_rel ("too big offset") branching to far successor thunks.
+- `fix-x86_64-va-start-offsets` — va_start derives gp/fp/overflow offsets
+  from the prologue's arg-passing walk instead of re-deriving them (block
+  args) (PR #438).
+- `fix-aarch64-blk-mov-clobber` — block-arg copies clobbering arg regs on
+  aarch64/riscv64/s390x/ppc64 (PR #440).
 
-Integration branch `meson` = all of the above merged + cherry-pick of
-upstream PR #420 (error-path null deref, `-x` annotated) + meson build
-(static `libmir`, `mir` dependency for subproject wraps) + this document.
-When upstream merges a topic PR, rebase `meson` and drop the topic.
+Still unmerged:
+- `allow-paramless-vararg-func` — C23 vararg functions with no named
+  parameter (PR #439, open).
+- `pr-420` — cherry-pick of upstream PR #420 (error-path null deref, `-x`
+  annotated).
+- Source-debug series, not yet filed: `expose-func-code-len` (per-function
+  machine-code length), `mir-insn-source-loc` (frontend source locations →
+  per-function line map), `mir-disable-inlining`
+  (`MIR_set_inline_permission`), then on `debug-support` directly the
+  spill-all debug codegen mode and the `mir-debug` GDB-JIT DWARF emitter
+  used by c2m `-g`.
+
+Integration branch `debug-support` (formerly `meson`) = the unmerged topics
+above + meson build (static `libmir`, `mir` dependency for subproject
+wraps) + this document + the maintaining-mir-fork skill. When upstream
+merges a topic PR, rebase `debug-support` onto master (commits upstream
+already has drop out) and drop the topic.
 
 Upstream issues we have verified do **not** reproduce on current master
 (tested x86_64 + aarch64, O0-O2): #308 (DSE wrong-store, was bbv-branch),
