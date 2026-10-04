@@ -232,6 +232,8 @@ static void gen_blk_mov (gen_ctx_t gen_ctx, MIR_insn_t anchor, size_t to_disp,
     gen_mov (gen_ctx, anchor, MIR_MOV, _MIR_new_var_op (ctx, R2_HARD_REG), treg_op3);
 }
 
+static void record_call_func (gen_ctx_t gen_ctx, MIR_insn_t call_insn, MIR_item_t func_item);
+
 static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   MIR_context_t ctx = gen_ctx->ctx;
   MIR_func_t func = curr_func_item->u.func;
@@ -259,6 +261,9 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
     arg_vars = VARR_ADDR (MIR_var_t, proto->args);
   }
   if (call_insn->ops[1].mode != MIR_OP_VAR) {
+    MIR_item_t target_func = gen_call_target_func (call_insn->ops[1]);
+    if (target_func != NULL && !MIR_get_func_redef_permission_p (ctx))
+      record_call_func (gen_ctx, call_insn, target_func);
     // ??? to optimize (can be immediate operand for func call)
     temp_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
     new_insn = MIR_new_insn (ctx, MIR_MOV, temp_op, call_insn->ops[1]);
@@ -704,6 +709,24 @@ struct label_ref {
 typedef struct label_ref label_ref_t;
 DEF_VARR (label_ref_t);
 
+/* Direct calls (see target_change_to_direct_calls): a call to a function item
+   is emitted as "mov tmp, <thunk addr>; blr tmp" and, once every function of a
+   link is generated, the blr is patched into "bl <machine code>" -- skipping
+   the thunk jump, and letting debuggers step into the callee (a thunk has no
+   symbol or line info). */
+typedef struct {
+  MIR_insn_t insn;      /* the call, recorded by machinize_call */
+  MIR_item_t func_item; /* the called function */
+} call_func_t;
+DEF_VARR (call_func_t);
+
+typedef struct {
+  MIR_item_t func_item;
+  size_t offset;     /* blr offset in the function's code (during translation) */
+  uint8_t *call_addr; /* its address once the code is placed */
+} call_ref_t;
+DEF_VARR (call_ref_t);
+
 struct target_ctx {
   unsigned char alloca_p, block_arg_func_p, leaf_p, short_bb_branch_p;
   size_t small_aggregate_save_area;
@@ -715,6 +738,9 @@ struct target_ctx {
   VARR (label_ref_t) * label_refs;
   VARR (uint64_t) * abs_address_locs;
   VARR (MIR_code_reloc_t) * relocs;
+  VARR (call_func_t) * call_funcs; /* this function's calls to function items */
+  VARR (call_ref_t) * func_call_refs; /* their blr offsets (this function) */
+  VARR (call_ref_t) * call_refs;      /* placed blrs awaiting change_to_direct_calls */
 };
 
 #define alloca_p gen_ctx->target_ctx->alloca_p
@@ -730,6 +756,14 @@ struct target_ctx {
 #define label_refs gen_ctx->target_ctx->label_refs
 #define abs_address_locs gen_ctx->target_ctx->abs_address_locs
 #define relocs gen_ctx->target_ctx->relocs
+#define call_funcs gen_ctx->target_ctx->call_funcs
+#define func_call_refs gen_ctx->target_ctx->func_call_refs
+#define call_refs gen_ctx->target_ctx->call_refs
+
+static void record_call_func (gen_ctx_t gen_ctx, MIR_insn_t call_insn, MIR_item_t func_item) {
+  call_func_t cf = {call_insn, func_item};
+  VARR_PUSH (call_func_t, call_funcs, cf);
+}
 
 static MIR_disp_t target_get_stack_slot_offset (gen_ctx_t gen_ctx, MIR_type_t type MIR_UNUSED,
                                                 MIR_reg_t slot) {
@@ -773,6 +807,7 @@ static void target_machinize (gen_ctx_t gen_ctx) {
   assert (curr_func_item->item_type == MIR_func_item);
   func = curr_func_item->u.func;
   block_arg_func_p = FALSE;
+  VARR_TRUNC (call_func_t, call_funcs, 0);
   anchor = DLIST_HEAD (MIR_insn_t, func->insns);
   small_aggregate_save_area = 0;
   for (i = int_arg_num = fp_arg_num = mem_size = 0; i < func->nargs; i++) {
@@ -2509,6 +2544,7 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
   VARR_TRUNC (uint8_t, result_code, 0);
   VARR_TRUNC (label_ref_t, label_refs, 0);
   VARR_TRUNC (uint64_t, abs_address_locs, 0);
+  VARR_TRUNC (call_ref_t, func_call_refs, 0);
   for (insn = DLIST_HEAD (MIR_insn_t, curr_func_item->u.func->insns); insn != NULL;
        insn = DLIST_NEXT (MIR_insn_t, insn)) {
     if (insn->code == MIR_LABEL) {
@@ -2525,6 +2561,13 @@ static uint8_t *target_translate (gen_ctx_t gen_ctx, size_t *len) {
         gen_record_line (gen_ctx, start, insn);
         out_insn (gen_ctx, insn, replacement, NULL);
         gen_record_cfi (gen_ctx, insn, start, VARR_LENGTH (uint8_t, result_code));
+        if (insn->code == MIR_CALL)
+          for (size_t j = 0; j < VARR_LENGTH (call_func_t, call_funcs); j++)
+            if (VARR_GET (call_func_t, call_funcs, j).insn == insn) {
+              call_ref_t cr = {VARR_GET (call_func_t, call_funcs, j).func_item, start, NULL};
+              VARR_PUSH (call_ref_t, func_call_refs, cr);
+              break;
+            }
       }
     }
   }
@@ -2566,9 +2609,30 @@ static void target_rebase (gen_ctx_t gen_ctx, uint8_t *base) {
   _MIR_update_code_arr (gen_ctx->ctx, base, VARR_LENGTH (MIR_code_reloc_t, relocs),
                         VARR_ADDR (MIR_code_reloc_t, relocs));
   gen_setup_lrefs (gen_ctx, base);
+  for (size_t i = 0; i < VARR_LENGTH (call_ref_t, func_call_refs); i++) {
+    call_ref_t cr = VARR_GET (call_ref_t, func_call_refs, i);
+    cr.call_addr = base + cr.offset;
+    VARR_PUSH (call_ref_t, call_refs, cr);
+  }
+  VARR_TRUNC (call_ref_t, func_call_refs, 0);
 }
 
-static void target_change_to_direct_calls (MIR_context_t ctx MIR_UNUSED) {}
+static void target_change_to_direct_calls (MIR_context_t ctx) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+  for (size_t i = 0; i < VARR_LENGTH (call_ref_t, call_refs); i++) {
+    call_ref_t cr = VARR_GET (call_ref_t, call_refs, i);
+    uint8_t *addr = cr.func_item->u.func->machine_code;
+    uint32_t insn;
+    if (addr == NULL) continue; /* callee not generated (yet): keep calling its thunk */
+    memcpy (&insn, cr.call_addr, 4);
+    if ((insn & 0xfffffc1f) != 0xd63f0000) continue; /* not (or no longer) blr Rn */
+    int64_t off = (int64_t) (addr - cr.call_addr);
+    if ((off & 3) != 0 || off < -((int64_t) 1 << 27) || off >= ((int64_t) 1 << 27)) continue;
+    insn = 0x94000000 | ((uint32_t) (off >> 2) & 0x3ffffff); /* bl addr */
+    _MIR_change_code (ctx, cr.call_addr, (uint8_t *) &insn, 4);
+  }
+  VARR_TRUNC (call_ref_t, call_refs, 0);
+}
 
 struct target_bb_version {
   uint8_t *base;
@@ -2698,6 +2762,9 @@ static void target_init (gen_ctx_t gen_ctx) {
   VARR_CREATE (label_ref_t, label_refs, alloc, 0);
   VARR_CREATE (uint64_t, abs_address_locs, alloc, 0);
   VARR_CREATE (MIR_code_reloc_t, relocs, alloc, 0);
+  VARR_CREATE (call_func_t, call_funcs, alloc, 0);
+  VARR_CREATE (call_ref_t, func_call_refs, alloc, 0);
+  VARR_CREATE (call_ref_t, call_refs, alloc, 0);
   patterns_init (gen_ctx);
   temp_jump = MIR_new_insn (ctx, MIR_JMP, MIR_new_label_op (ctx, NULL));
   temp_jump_replacement = find_insn_pattern_replacement (gen_ctx, temp_jump);
@@ -2711,6 +2778,9 @@ static void target_finish (gen_ctx_t gen_ctx) {
   VARR_DESTROY (label_ref_t, label_refs);
   VARR_DESTROY (uint64_t, abs_address_locs);
   VARR_DESTROY (MIR_code_reloc_t, relocs);
+  VARR_DESTROY (call_func_t, call_funcs);
+  VARR_DESTROY (call_ref_t, func_call_refs);
+  VARR_DESTROY (call_ref_t, call_refs);
   MIR_free (alloc, gen_ctx->target_ctx);
   gen_ctx->target_ctx = NULL;
 }

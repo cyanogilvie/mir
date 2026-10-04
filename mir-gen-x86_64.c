@@ -2731,9 +2731,10 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
                     || op_ref->mode == MIR_OP_REF);
         v = (uint64_t) int_value (gen_ctx, op_ref);
         gen_assert (const_ref_num < 0 && disp32 < 0);
-        MIR_item_t func_item
-          = op_ref->mode != MIR_OP_REF || op_ref->u.ref->item_type != MIR_func_item ? NULL
-                                                                                    : op_ref->u.ref;
+        /* Calls through forward/import items are made direct too (see
+           target_change_to_direct_calls): it skips the thunk jump, and debuggers
+           can step into the callee (a thunk has no symbol/line info). */
+        MIR_item_t func_item = gen_call_target_func (*op_ref);
         const_ref_num = setup_imm_addr (gen_ctx, v, &mod, &rm, &disp32, TRUE, func_item);
         break;
       case '/':
@@ -3049,6 +3050,7 @@ static void target_change_to_direct_calls (MIR_context_t ctx) {
     MIR_func_t ref_func = ref_func_item->u.func;
     uint8_t *addr_loc, *addr_before, *addr = ref_func->machine_code;
     uint8_t *call_addr = call_refs_addr[i].call_addr;
+    if (addr == NULL) continue; /* callee not generated (yet): keep calling its thunk */
     int32_t off = *(int32_t *) (call_addr + 2);
     int call32_p = FALSE;
     if (call_addr[0] == 0xff) { /* call *rel32(rip) */

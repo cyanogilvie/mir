@@ -340,6 +340,19 @@ DEF_VARR (MIR_code_reloc_t);
    coalescing runs with the same location.  Targets call this from their emit
    loop just before appending an insn's machine code.  No-op for unlocated insns
    so non-debug compiles cost nothing but the branch. */
+/* The function a call operand refers to, through forward/import/export items
+   (frontends typically call through a forward or import that the linker
+   resolved), or NULL if it isn't a function generated in this context. */
+static MIR_item_t gen_call_target_func (MIR_op_t op) {
+  if (op.mode != MIR_OP_REF) return NULL;
+  MIR_item_t item = op.u.ref;
+  while (item != NULL
+         && (item->item_type == MIR_forward_item || item->item_type == MIR_import_item
+             || item->item_type == MIR_export_item))
+    item = item->ref_def;
+  return item != NULL && item->item_type == MIR_func_item ? item : NULL;
+}
+
 /* Attach a frame-unwind event to a prologue/epilogue insn (see cfi_mark_t).
    reg is a DWARF register number. */
 static void gen_cfi_mark (gen_ctx_t gen_ctx, MIR_insn_t insn, int at_start_p, MIR_cfi_kind_t kind,
