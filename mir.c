@@ -3917,6 +3917,20 @@ static void set_inline_reg_map (MIR_context_t ctx, MIR_reg_t old_reg, MIR_reg_t 
 #define MIR_MAX_CALLER_SIZE_FOR_ANY_GROWTH_INLINE MIR_MAX_INSNS_FOR_INLINE
 #endif
 
+/* Calls to micro functions (refcount helpers, accessors and the like, whose
+   call overhead and lost optimization of the caller's code around the call can
+   cost more than the body) are inlined even past MIR_MAX_FUNC_INLINE_GROWTH.
+   As a circuit breaker for callers making very many such calls, the insns added
+   this way per caller are capped at MIR_MAX_MICRO_INLINE_GROWTH_INSNS, which
+   bounds the extra generation cost per function whatever the caller's size. */
+#ifndef MIR_MAX_INSNS_FOR_MICRO_INLINE
+#define MIR_MAX_INSNS_FOR_MICRO_INLINE MIR_MAX_INSNS_FOR_CALL_INLINE
+#endif
+
+#ifndef MIR_MAX_MICRO_INLINE_GROWTH_INSNS
+#define MIR_MAX_MICRO_INLINE_GROWTH_INSNS 2000
+#endif
+
 /* Simple alloca analysis.  Return top alloca insn with const size.
    If there are other allocas return true through
    non_top_alloca_p. Should we consider bstart/bend too?  */
@@ -4071,7 +4085,7 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
   MIR_insn_t call, insn, prev_insn, new_insn, ret_insn, anchor, stop_insn;
   MIR_item_t called_func_item;
   MIR_func_t func, called_func;
-  size_t original_func_insns_num, func_insns_num, called_func_insns_num;
+  size_t original_func_insns_num, func_insns_num, called_func_insns_num, micro_growth = 0;
 
   mir_assert (func_item->item_type == MIR_func_item);
   vn_empty (ctx);
@@ -4121,11 +4135,18 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     called_func_insns_num = DLIST_LENGTH (MIR_insn_t, called_func->insns);
     if (called_func->first_lref != NULL || called_func->vararg_p || called_func->jret_p
         || called_func_insns_num > (func_insn->code != MIR_CALL ? MIR_MAX_INSNS_FOR_INLINE
-                                                                : MIR_MAX_INSNS_FOR_CALL_INLINE)
-        || (func_insns_num > (100 + MIR_MAX_FUNC_INLINE_GROWTH) * original_func_insns_num / 100
-            && func_insns_num > MIR_MAX_CALLER_SIZE_FOR_ANY_GROWTH_INLINE)) {
+                                                                : MIR_MAX_INSNS_FOR_CALL_INLINE)) {
       simplify_op (ctx, func_item, func_insn, 1, FALSE, func_insn->code, FALSE, TRUE);
       continue;
+    }
+    if (func_insns_num > (100 + MIR_MAX_FUNC_INLINE_GROWTH) * original_func_insns_num / 100
+        && func_insns_num > MIR_MAX_CALLER_SIZE_FOR_ANY_GROWTH_INLINE) {
+      if (called_func_insns_num > MIR_MAX_INSNS_FOR_MICRO_INLINE
+          || micro_growth + called_func_insns_num > MIR_MAX_MICRO_INLINE_GROWTH_INSNS) {
+        simplify_op (ctx, func_item, func_insn, 1, FALSE, func_insn->code, FALSE, TRUE);
+        continue;
+      }
+      micro_growth += called_func_insns_num;
     }
     func_insns_num += called_func_insns_num;
     inlined_calls++;
