@@ -290,6 +290,19 @@ void MIR_debug_destroy (MIR_debug_t d) {
   free (d);
 }
 
+void MIR_debug_clear_funcs (MIR_debug_t d) {
+  if (d == NULL) return;
+  for (int i = 0; i < d->n_funcs; i++) {
+    free (d->funcs[i].name);
+    free (d->funcs[i].line_map);
+    free (d->funcs[i].cfi);
+  }
+  d->n_funcs = 0;
+  for (int i = 0; i < d->n_vars; i++) free (d->vars[i].name);
+  d->n_vars = 0;
+  d->cur_func = 0;
+}
+
 uint32_t MIR_debug_add_file (MIR_debug_t d, const char *path) {
   for (int i = 0; i < d->n_files; i++)
     if (strcmp (d->files[i], path) == 0) return (uint32_t) (i + 1);

@@ -124,6 +124,11 @@ extern void MIR_debug_add_var (MIR_debug_t d, const char *name, int is_param,
    ownership) and *size.  Returns nonzero on failure / unsupported host. */
 extern int MIR_debug_emit (MIR_debug_t d, void **buf, size_t *size);
 
+/* Drop the functions (and their variables) added so far, keeping the files and
+   types.  For emitting one object per function as each is generated (lazily),
+   against a type graph built once: add_func ... emit, clear_funcs, repeat. */
+extern void MIR_debug_clear_funcs (MIR_debug_t d);
+
 /* --- GDB JIT interface --------------------------------------------------
    Defined in mir-debug-gdb.c, which owns the process-global
    __jit_debug_descriptor.  Register a buffer (from MIR_debug_emit, ownership
