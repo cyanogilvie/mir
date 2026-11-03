@@ -351,6 +351,7 @@ typedef struct MIR_func {
   char vararg_p;                  /* flag of variable number of arguments */
   char expr_p;                    /* flag of that the func can be used as a linker expression */
   char jret_p;                    /* flag of jcall/jret func, set up after MIR_func_finish */
+  char inlines_deferred_p;        /* MIR_link left its calls to inline for the generator */
   VARR (MIR_var_t) * vars;        /* args and locals but temps */
   VARR (MIR_var_t) * global_vars; /* can be NULL */
   void *machine_code;             /* address of generated machine code or NULL */
@@ -596,6 +597,16 @@ extern void MIR_set_func_redef_permission (MIR_context_t ctx, int flag_p);
    Disable for debuggable code so each function keeps its own frames/lines. */
 extern int MIR_get_inline_permission_p (MIR_context_t ctx);
 extern void MIR_set_inline_permission (MIR_context_t ctx, int enable_p);
+/* Deferred inlining: when enabled, MIR_link marks each function with calls to
+   inline instead of inlining them, and the generator inlines into its working
+   copy of a function as it generates it, so only generated functions pay for
+   inlining -- for lazy generation (MIR_set_lazy_gen_interface or an
+   embedder's own wrapper), where most functions may never be generated.
+   Function bodies themselves stay un-inlined: what's inlined into a caller
+   doesn't depend on which callees happen to have been generated first.
+   Interpreted functions run without inlining.  Default: off. */
+extern int MIR_get_deferred_inlining_p (MIR_context_t ctx);
+extern void MIR_set_deferred_inlining (MIR_context_t ctx, int enable_p);
 /* When enabled, the generator homes every local in a dedicated stack slot
    instead of a register (naive, libtcc-like codegen).  Slower, but every
    variable then has a stable in-memory location whose frame offset can be
@@ -737,6 +748,7 @@ extern void _MIR_register_unspec_insn (MIR_context_t ctx, uint64_t code, const c
                                        int vararg_p, MIR_var_t *args);
 extern void _MIR_duplicate_func_insns (MIR_context_t ctx, MIR_item_t func_item);
 extern void _MIR_restore_func_insns (MIR_context_t ctx, MIR_item_t func_item);
+extern void _MIR_process_deferred_inlines (MIR_context_t ctx, MIR_item_t func_item);
 
 extern void _MIR_output_data_item_els (MIR_context_t ctx, FILE *f, MIR_item_t item, int c_p);
 extern void _MIR_get_temp_item_name (MIR_context_t ctx, MIR_module_t module, char *buff,

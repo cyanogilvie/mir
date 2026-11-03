@@ -211,7 +211,7 @@ typedef const char *char_ptr_t;
 DEF_VARR (char_ptr_t);
 static VARR (char_ptr_t) * headers;
 
-static int interp_exec_p, gen_exec_p, lazy_gen_exec_p, lazy_bb_gen_exec_p;
+static int interp_exec_p, gen_exec_p, lazy_gen_exec_p, lazy_bb_gen_exec_p, defer_inlines_p;
 static VARR (char_ptr_t) * exec_argv;
 static VARR (char_ptr_t) * source_file_names;
 
@@ -377,7 +377,8 @@ static void init_options (int argc, char *argv[]) {
     } else if (strcmp (argv[i], "-i") == 0) {
       VARR_PUSH (char_ptr_t, source_file_names, STDIN_SOURCE_NAME);
     } else if (strcmp (argv[i], "-ei") == 0 || strcmp (argv[i], "-eg") == 0
-               || strcmp (argv[i], "-el") == 0 || strcmp (argv[i], "-eb") == 0) {
+               || strcmp (argv[i], "-el") == 0 || strcmp (argv[i], "-eld") == 0
+               || strcmp (argv[i], "-eb") == 0) {
       VARR_TRUNC (char_ptr_t, exec_argv, 0);
       if (strcmp (argv[i], "-ei") == 0)
         interp_exec_p = TRUE;
@@ -385,6 +386,8 @@ static void init_options (int argc, char *argv[]) {
         gen_exec_p = TRUE;
       else if (strcmp (argv[i], "-el") == 0)
         lazy_gen_exec_p = TRUE;
+      else if (strcmp (argv[i], "-eld") == 0)
+        lazy_gen_exec_p = defer_inlines_p = TRUE;
       else
         lazy_bb_gen_exec_p = TRUE;
       VARR_PUSH (char_ptr_t, exec_argv, "c2m");
@@ -419,6 +422,7 @@ static void init_options (int argc, char *argv[]) {
       fprintf (stderr, "         (all trailing args are passed to the program)\n");
       fprintf (stderr, "  -eg -- execute code generated with given options\n");
       fprintf (stderr, "  -el -- execute code lazily generated code with given options\n");
+      fprintf (stderr, "  -eld -- as -el, with inlining deferred to code generation\n");
       fprintf (stderr, "  -eb -- execute code lazily generated BB code with given options\n");
       fprintf (stderr, "%s version commit=%s\n", argv[0], STRING (GITCOMMIT));
       exit (0);
@@ -745,7 +749,7 @@ int main (int argc, char *argv[], char *env[]) {
   int i, bin_p;
   size_t len;
 
-  interp_exec_p = gen_exec_p = lazy_gen_exec_p = lazy_bb_gen_exec_p = FALSE;
+  interp_exec_p = gen_exec_p = lazy_gen_exec_p = lazy_bb_gen_exec_p = defer_inlines_p = FALSE;
   VARR_CREATE (void_ptr_t, allocated, &default_alloc, 100);
   VARR_CREATE (char_ptr_t, source_file_names, &default_alloc, 32);
   VARR_CREATE (char_ptr_t, exec_argv, &default_alloc, 32);
@@ -966,6 +970,7 @@ int main (int argc, char *argv[], char *env[]) {
           MIR_gen_set_debug_file (main_ctx, stderr);
           MIR_gen_set_debug_level (main_ctx, gen_debug_level);
         }
+        if (defer_inlines_p) MIR_set_deferred_inlining (main_ctx, TRUE);
         MIR_link (main_ctx,
                   gen_exec_p        ? MIR_set_gen_interface
                   : lazy_gen_exec_p ? MIR_set_lazy_gen_interface

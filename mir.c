@@ -36,6 +36,7 @@ struct MIR_context {
   MIR_code_alloc_t code_alloc;
   int func_redef_permission_p;        /* when true loaded func can be redfined lately */
   int no_inline_p;                    /* when true MIR_link does not inline calls (e.g. for debug) */
+  int defer_inlines_p;                /* when true the generator inlines, not MIR_link */
   int spill_all_p;                    /* when true the generator homes every local in the stack (debug) */
   VARR (size_t) * insn_nops;          /* constant after initialization */
   VARR (MIR_proto_t) * unspec_protos; /* protos of unspec insns (set only during initialization) */
@@ -72,6 +73,7 @@ struct MIR_context {
 #define error_func ctx->error_func
 #define func_redef_permission_p ctx->func_redef_permission_p
 #define no_inline_p ctx->no_inline_p
+#define defer_inlines_p ctx->defer_inlines_p
 #define spill_all_p ctx->spill_all_p
 #define unspec_protos ctx->unspec_protos
 #define insn_nops ctx->insn_nops
@@ -693,6 +695,10 @@ int MIR_get_inline_permission_p (MIR_context_t ctx) { return !no_inline_p; }
 
 void MIR_set_inline_permission (MIR_context_t ctx, int enable_p) { no_inline_p = !enable_p; }
 
+int MIR_get_deferred_inlining_p (MIR_context_t ctx) { return defer_inlines_p; }
+
+void MIR_set_deferred_inlining (MIR_context_t ctx, int enable_p) { defer_inlines_p = enable_p; }
+
 int MIR_get_spill_all_p (MIR_context_t ctx) { return spill_all_p; }
 
 void MIR_set_spill_all (MIR_context_t ctx, int enable_p) { spill_all_p = enable_p; }
@@ -790,6 +796,7 @@ MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc) {
   ctx->code_alloc = code_alloc;
   error_func = default_error;
   no_inline_p = FALSE;
+  defer_inlines_p = FALSE;
   spill_all_p = FALSE;
   ctx->gdb_jit_finish = NULL;
   func_redef_permission_p = FALSE;
@@ -1446,7 +1453,7 @@ static MIR_item_t new_func_arr (MIR_context_t ctx, const char *name, size_t nres
   func->nargs = (uint32_t) nargs;
   func->last_temp_num = 0;
   func->vararg_p = vararg_p != 0;
-  func->expr_p = func->jret_p = FALSE;
+  func->expr_p = func->jret_p = func->inlines_deferred_p = FALSE;
   func->n_inlines = 0;
   func->machine_code = func->call_addr = NULL;
   func->code_len = 0;
@@ -2063,7 +2070,12 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
     for (item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
          item = DLIST_NEXT (MIR_item_t, item)) {
       if (item->item_type == MIR_func_item && item->data != NULL) {
-        if (!no_inline_p) process_inlines (ctx, item);
+        if (no_inline_p) {
+        } else if (defer_inlines_p) {
+          item->u.func->inlines_deferred_p = TRUE; /* see _MIR_process_deferred_inlines */
+        } else {
+          process_inlines (ctx, item);
+        }
         item->data = NULL;
 #if 0
         fprintf (stderr, "+++++ Function after inlining:\n");
@@ -4319,6 +4331,16 @@ static void process_inlines (MIR_context_t ctx, MIR_item_t func_item) {
     MIR_append_insn (ctx, func_item, insn);
   }
   if (curr_label_num < new_label_num) curr_label_num = new_label_num;
+}
+
+/* Called by the generator on its working copy of the function (after
+   _MIR_duplicate_func_insns), so the function's own insns are never inlined
+   into, and _MIR_restore_func_insns drops the inlined code with the rest of
+   the copy. */
+void _MIR_process_deferred_inlines (MIR_context_t ctx, MIR_item_t func_item) {
+  mir_assert (func_item->item_type == MIR_func_item
+              && DLIST_HEAD (MIR_insn_t, func_item->u.func->original_insns) != NULL);
+  if (func_item->u.func->inlines_deferred_p && !no_inline_p) process_inlines (ctx, func_item);
 }
 
 /* New Page */

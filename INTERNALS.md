@@ -223,6 +223,18 @@ Callee regs are renamed `.c<n>_<name>`; top-level constant allocas of caller
 and callees are coalesced. Functions with lrefs (computed-goto label tables)
 are never inlined.
 
+Deferred inlining (fork, `MIR_set_deferred_inlining`): MIR_link only flags
+each function with inline candidates (`MIR_func.inlines_deferred_p`), and
+`generate_func_code` runs `process_inlines` on its working copy right after
+`_MIR_duplicate_func_insns` (`_MIR_process_deferred_inlines`).  For lazy
+generation, where inlining every function at link time is a large share of a
+compile for functions that may never run (renaming each inlined callee reg
+interns a fresh name).  Function bodies are never inlined into, since
+`_MIR_restore_func_insns` drops the copy (and its renamed vars), so what's
+inlined into a caller never depends on which callees were generated first
+(eager inlining, in item order, inlines already-expanded bodies for earlier
+callees).  c2m `-eld` and the `use-c2m-gen-lazy-defer` c-tests mode run it.
+
 ---
 
 ## 7. The generator pipeline (mir-gen.c)

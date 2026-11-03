@@ -717,7 +717,9 @@ main:	  func
       * If you pass `MIR_set_lazy_gen_interface` to `MIR_link`, then
         MIR-generator will generate machine code only on the first
         function call and called functions from MIR code will execute
-        the machine code
+        the machine code.  With `MIR_set_deferred_inlining (ctx, TRUE)`
+        before `MIR_link`, inlining is deferred to code generation too, so
+        functions never called don't pay for it
       * If you pass `MIR_set_lazy_bb_gen_interface` to `MIR_link`, then
         MIR-generator will generate machine code of function basic blocks
 	only on their first execution

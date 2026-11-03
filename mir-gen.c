@@ -9436,6 +9436,7 @@ static void *generate_func_code (MIR_context_t ctx, MIR_item_t func_item, int ma
   });
   curr_func_item = func_item;
   _MIR_duplicate_func_insns (ctx, func_item);
+  _MIR_process_deferred_inlines (ctx, func_item);
   curr_cfg = func_item->data = gen_malloc (gen_ctx, sizeof (struct func_cfg));
   build_func_cfg (gen_ctx);
   bbs_num = curr_bb_index;
